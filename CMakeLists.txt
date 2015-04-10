@@ -20,4 +20,5 @@ target_link_libraries( testapp
 	avformat
 	avutil
 	avcodec
+	swscale
 )

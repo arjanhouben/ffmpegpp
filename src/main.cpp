@@ -6,21 +6,11 @@
 
 using namespace std;
 
-void write_ppm( const string &output, size_t stride, size_t height, const char *img )
+void write_ppm( const string &output, size_t stride, size_t height, const void *ptr )
 {
 	ofstream ppm( output, ios::binary );
 	ppm << "P6\n" << stride << ' ' << height << "\n255\n";
-	for ( auto y = 0; y < height; ++y )
-	{
-		for ( auto x = 0; x < stride; ++x )
-		{
-			ppm.write( img, 1 );
-			ppm.write( img, 1 );
-			ppm.write( img, 1 );
-			++img;
-		}
-		ppm << '\n';
-	}
+	ppm.write( reinterpret_cast< const char* >( ptr ), stride * height * 3 );
 }
 
 void test_manual_file_read( const string &input, const string &output )
@@ -50,14 +40,17 @@ void test_manual_file_read( const string &input, const string &output )
 
 	auto fc = av::format::alloc_context( ioctx );
 	
-	auto f = av::format::open_input( std::move( fc ), "", inf );
+	auto f = av::format::open_input( "", std::move( fc ), inf );
 	
-	auto henk = [output]( AVFrame &frame )
+	vector< char > buffer;
+	
+	auto henk = [output,&buffer]( AVFrame &frame )
 	{
-		auto picture = reinterpret_cast< AVPicture* >( &frame );
-		auto img = reinterpret_cast< const char* >( picture->data[ 0 ] );
+		buffer.resize( 3 * frame.width * frame.height );
 		
-		write_ppm( output, picture->linesize[ 0 ], frame.height, img );
+		sws::convert( frame, buffer.data(), frame.width, AV_PIX_FMT_RGB24 );
+		
+		write_ppm( output, frame.width, frame.height, buffer.data() );
 	};
 	
 	for ( auto &s : f.streams() )
@@ -65,28 +58,24 @@ void test_manual_file_read( const string &input, const string &output )
 		s.open( henk );
 	}
 	
-	auto frame = av::frame::alloc();
-	
-	auto pkt = av::packet();
-	while ( f.decode( pkt, frame ) )
-	{
-		//
-	}
+	f.decode_all();
 }
 
 void test_file_read( const string &input, const string &output )
 {
-	auto context = av::format::alloc_context();
-	auto format = av_find_input_format( "mjpeg" ) || av::error( "could not find mjpeg format" );
-
-	auto f = av::format::open_input( std::move( context ), input.c_str(), format );
+	auto f = av::format::open_input( input.c_str() );
 	
 	auto callback = [output]( AVFrame &frame )
 	{
-		auto picture = reinterpret_cast< AVPicture* >( &frame );
-		auto img = reinterpret_cast< const char* >( picture->data[ 0 ] );
+		vector< uint8_t > henk( frame.width * frame.height * 3 );
 		
-		write_ppm( output, picture->linesize[ 0 ], frame.height, img );
+		auto a = henk.data();
+		auto b = a + frame.width * frame.height;
+		auto c = b + frame.width * frame.height;
+		
+		sws::convert( frame, { a,b,c }, { frame.width, frame.width, frame.width }, AV_PIX_FMT_YUV444P );
+		
+		write_ppm( output, frame.width, frame.height, henk.data() );
 	};
 
 	for( auto &s : f.streams() )
@@ -94,12 +83,7 @@ void test_file_read( const string &input, const string &output )
 		s.open( callback );
 	}
 	
-	av::packet pkt;
-	auto frame = av::frame::alloc();
-	while ( f.decode( pkt, frame ) )
-	{
-		//
-	}
+	f.decode_all();
 }
 
 int main( int argc, char **argv )

@@ -4,10 +4,12 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <array>
 
 extern "C"
 {
 #include "libavformat/avformat.h"
+#include "libswscale/swscale.h"
 }
 
 namespace av
@@ -98,9 +100,23 @@ namespace av
 		pointer_type alloc_context( const io::context::pointer_type &ptr = io::context::pointer_type() );
 	}
 	
-	bool read_frame( format::pointer_type &p, AVPacket &packet )
+	struct packet : AVPacket
 	{
-		auto result = av_read_frame( p.get(), &packet );
+		packet()
+		{
+			av_init_packet( this );
+		}
+		packet( const packet& ) = delete;
+		packet( packet&& ) = delete;
+		~packet()
+		{
+			av_free_packet( this );
+		}
+	};
+	
+	bool read_frame( format::pointer_type &p, packet &pack )
+	{
+		auto result = av_read_frame( p.get(), &pack );
 		if ( result )
 		{
 			if ( result == AVERROR_EOF )
@@ -139,14 +155,6 @@ namespace av
 			return frameFinished;
 		}
 	}
-	
-	struct packet : AVPacket
-	{
-		packet()
-		{
-			av_init_packet( this );
-		}
-	};
 	
 	namespace io
 	{
@@ -312,7 +320,7 @@ namespace av
 			{
 				result->pb = ptr->context_.get();
 			}
-			return std::move( result );
+			return result;
 		}
 		
 		struct file
@@ -357,6 +365,19 @@ namespace av
 			inline bool decode( packet &p, frame::pointer_type &frame )
 			{
 				return decode( p, *frame );
+			}
+			
+			void decode_all( packet &&p, frame::pointer_type &&frame )
+			{
+				while ( decode( p, *frame ) )
+				{
+					//
+				}
+			}
+			
+			inline void decode_all()
+			{
+				decode_all( av::packet(), av::frame::alloc() );
 			}
 			
 			void add_stream( AVStream &s )
@@ -414,7 +435,7 @@ namespace av
 				std::vector< stream > streams_;
 		};
 		
-		file open_input( pointer_type &&p, const char *filename, AVInputFormat *fmt, AVDictionary **options = nullptr )
+		file open_input( const char *filename, pointer_type &&p, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
 		{
 			// release, instead of get since avformat_open_input will free ptr on error
 			auto ptr = p.release();
@@ -433,10 +454,56 @@ namespace av
 			
 			return result;
 		}
+		
+		inline file open_input( const char *filename, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
+		{
+			return open_input( filename, alloc_context(), fmt, options );
+		}
+		
+		inline file open_input( const char *filename, const io::context::pointer_type &ctx, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
+		{
+			return open_input( filename, alloc_context( ctx ), fmt, options );
+		}
+	}
+}
+
+namespace sws
+{
+	class context
+	{
+		std::vector< SwsContext* > contexts_;
+	};
+	
+	void convert( AVFrame &frame, uint8_t **dst, const int *strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
+	{
+		if ( !width )
+		{
+			width = frame.width;
+		}
+		if ( !height )
+		{
+			height = frame.height;
+		}
+		
+		auto ctx = sws_getCachedContext( nullptr, frame.width, frame.height, static_cast< AVPixelFormat >( frame.format ), width, height, desired, flags, nullptr, nullptr, nullptr );
+		
+		auto &picture = reinterpret_cast< AVPicture& >( frame );
+		sws_scale( ctx, picture.data, picture.linesize, 0, frame.height, dst, strides );
 	}
 	
-	struct stream_type
+	void convert( AVFrame &frame, std::initializer_list< uint8_t* > dst, std::initializer_list< int > strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
 	{
-		std::function< void( AVFrame &frame ) > &callback;
-	};
+		std::vector< uint8_t* > dstptr( dst.begin(), dst.end() );
+		dstptr.resize( AV_NUM_DATA_POINTERS, 0 );
+		
+		std::vector< int > stridesptr( strides.begin(), strides.end() );
+		stridesptr.resize( AV_NUM_DATA_POINTERS, 0 );
+		
+		convert( frame, dstptr.data(), stridesptr.data(), desired, width, height, flags );
+	}
+	
+	void convert( AVFrame &frame, void *dst, int stride, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
+	{
+		convert( frame, { reinterpret_cast< uint8_t* >( dst ) }, { stride }, desired, width, height, flags );
+	}
 }
