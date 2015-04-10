@@ -22,3 +22,10 @@ target_link_libraries( testapp
 	avcodec
 	swscale
 )
+
+install(
+	FILES
+		include/ffmpeg++.h
+	DESTINATION
+		include/ffmpeg++/
+)
