@@ -61,23 +61,36 @@ namespace av
 
 	typedef decltype( make_unique( av_malloc( 0 ), &av_free ) ) pointer_type;
 
-	struct buffer : pointer_type
+	struct buffer
 	{
-		const size_t size;
-
 		buffer( size_t s ) :
-			pointer_type( malloc( s ), &av_free ),
-			size( s ) { }
+			data_( malloc( s ), &av_free ),
+			size_( s ) { }
+
+		buffer() :
+			data_( nullptr, &av_free ),
+			size_( 0 ) { }
 
 		unsigned char* data()
 		{
-			return reinterpret_cast< unsigned char* >( get() );
+			return reinterpret_cast< unsigned char* >( data_.get() );
 		}
 
 		const unsigned char* data() const
 		{
-			return reinterpret_cast< unsigned char* >( get() );
+			return reinterpret_cast< unsigned char* >( data_.get() );
 		}
+
+		size_t size() const
+		{
+			return size_;
+		}
+
+		private:
+
+			pointer_type data_;
+			size_t size_;
+
 	};
 
 	pointer_type malloc( size_t s )
@@ -93,16 +106,31 @@ namespace av
 			typedef std::unique_ptr< type > pointer_type;
 		}
 	}
+	
+	void setup_custom_io( AVFormatContext *c, const io::context::pointer_type &t );
 
 	namespace format
 	{
-		typedef decltype( make_unique( avformat_alloc_context(), &avformat_free_context ) ) pointer_type;
-		pointer_type alloc_context( const io::context::pointer_type &ptr = io::context::pointer_type() );
+		struct context : std::unique_ptr< AVFormatContext, decltype( &avformat_free_context ) >
+		{
+			explicit context( AVFormatContext *ctx, const io::context::pointer_type &ptr = io::context::pointer_type() ) :
+				std::unique_ptr< AVFormatContext, decltype( &avformat_free_context ) >( ctx, &avformat_free_context )
+			{
+				if ( ptr )
+				{
+					setup_custom_io( get(), ptr );
+				}
+			}
+			
+			explicit context( const io::context::pointer_type &ptr = io::context::pointer_type() ) :
+				context( avformat_alloc_context(), ptr ) {}
+		};
 	}
 
 	struct packet : AVPacket
 	{
-		packet()
+		packet() :
+			AVPacket( { 0 } )
 		{
 			av_init_packet( this );
 		}
@@ -119,7 +147,7 @@ namespace av
 		}
 	};
 
-	bool read_frame( format::pointer_type &p, packet &pack )
+	bool read_frame( format::context &p, packet &pack )
 	{
 		auto result = av_read_frame( p.get(), &pack );
 		if ( result )
@@ -153,11 +181,47 @@ namespace av
 
 	namespace codec
 	{
+		namespace helper
+		{
+			void free( AVCodecContext *ctx )
+			{
+				avcodec_free_context( &ctx );
+			}
+		}
+		
+		typedef std::unique_ptr< AVCodecContext, decltype( &helper::free ) > pointer_type;
+	
 		bool decode_video( AVCodecContext *codec, frame::pointer_type &p, const AVPacket &packet )
 		{
 			int frameFinished = false;
 			avcodec_decode_video2( codec, p.get(), &frameFinished, &packet ) < error( "could not decode video" );
 			return frameFinished;
+		}
+		
+		AVCodec* open( AVCodecContext &ctx )
+		{
+			AVCodec *decoder = nullptr;
+			if ( !ctx.codec )
+			{
+				decoder = avcodec_find_decoder( ctx.codec_id );
+			}
+			avcodec_open2( &ctx, decoder, nullptr ) < av::error( "could not open codec" );
+			return decoder;
+		}
+		
+		AVCodec* open( const pointer_type &ctx )
+		{
+			return open( *ctx );
+		}
+		
+		pointer_type context( const AVCodec *codec )
+		{
+			return make_unique( avcodec_alloc_context3( codec ), &helper::free );
+		}
+		
+		pointer_type context( AVCodecID codec )
+		{
+			return context( avcodec_find_encoder( codec ) );
 		}
 	}
 
@@ -174,15 +238,25 @@ namespace av
 
 				public:
 
-					type( buffer &&b ) :
-						read(),
-						write(),
-						seek(),
+					type() :
+						read( [](uint8_t*,int) { return 0; } ),
+						write( [](uint8_t*,int) { return 0; } ),
+						seek( [](int64_t,int) { return 0; } ),
 						context_( nullptr, &av_free ),
-						buffer_( std::move( b ) ) {}
+						buffer_() {}
 
 					std::function< int( uint8_t*, int ) > read, write;
 					std::function< int64_t(int64_t,int) > seek;
+
+					void buffer( buffer &&b )
+					{
+						buffer_ = std::move( b );
+					}
+
+					void context( AVIOContext *ctx )
+					{
+						context_.reset( ctx );
+					}
 
 				private:
 
@@ -202,11 +276,10 @@ namespace av
 					}
 
 					pointer_type context_;
-					buffer buffer_;
+					av::buffer buffer_;
 
-					friend std::unique_ptr< type > alloc( buffer &&b );
 					friend struct callback;
-					friend format::pointer_type format::alloc_context( const io::context::pointer_type &ptr );
+					friend void av::setup_custom_io( AVFormatContext *c, const io::context::pointer_type &t );
 			};
 
 			struct callback
@@ -229,9 +302,10 @@ namespace av
 
 			std::unique_ptr< type > alloc( buffer &&b )
 			{
-				auto result = std::unique_ptr< type >( new type( std::move( b ) ) );
-				auto ctx = avio_alloc_context( result->buffer_.data(), result->buffer_.size, false, result.get(), &callback::read, &callback::write, &callback::seek );
-				result->context_.reset( ctx );
+				auto result = std::unique_ptr< type >( new type() );
+				auto ctx = avio_alloc_context( b.data(), b.size(), false, result.get(), &callback::read, &callback::write, &callback::seek );
+				result->buffer( std::move( b ) );
+				result->context( ctx );
 				return result;
 			}
 
@@ -242,66 +316,94 @@ namespace av
 		}
 	}
 
+
+	void setup_custom_io( AVFormatContext *c, const io::context::pointer_type &t )
+	{
+		c->pb = t->context_.get();
+		c->flags = AVFMT_FLAG_CUSTOM_IO;
+	}
+
 	typedef std::function< void( AVFrame &frame ) > callback_t;
 
 	struct stream
 	{
-		stream( AVStream &s ) : stream_( &s ), cb_( std::make_shared< callback_t >() ) {}
-
+		typedef std::unique_ptr< AVStream, decltype( &av_free ) > pointer_type;
+		
+		static void null_deleter( void* ) {}
+		
+		static pointer_type alloc( const format::context &fmt, const AVCodec *codec )
+		{
+			return make_unique( avformat_new_stream( fmt.get(), codec ), &av_free );
+		}
+		
+		stream( pointer_type &&ptr ) :
+			impl_( std::make_shared< implementation_t >( implementation_t{ std::move( ptr ) } ) ) {}
+		
 		explicit operator bool() const
 		{
-			return bool( *cb_ );
+			return bool( impl_->cb_ );
 		}
 
 		AVStream* get() const
 		{
-			return stream_;
+			return impl_->stream_.get();
 		}
 
 		AVStream* operator ->() const
 		{
-			return stream_;
+			return impl_->stream_.get();
 		}
 
 		void open( const callback_t &cb )
 		{
-			stream_->discard = AVDISCARD_DEFAULT;
-			*cb_ = cb;
-			auto codec = stream_->codec;
-			auto decoder = avcodec_find_decoder( codec->codec_id );
-			avcodec_open2( codec, decoder, nullptr ) < av::error( "could not open codec" );
+			impl_->stream_->discard = AVDISCARD_DEFAULT;
+			impl_->cb_ = cb;
+			if ( impl_->stream_->codec )
+			{
+				codec::open( *impl_->stream_->codec );
+			}
 		}
 
 		void close()
 		{
-			stream_->discard = AVDISCARD_ALL;
-			*cb_ = callback_t();
+			impl_->stream_->discard = AVDISCARD_ALL;
+			impl_->cb_ = callback_t();
 		}
 
 		void call( AVFrame &frame )
 		{
-			cb_->operator()( frame );
+			impl_->cb_( frame );
 		}
 
 		private:
-			AVStream *stream_;
-			std::shared_ptr< callback_t > cb_;
+		
+			struct implementation_t
+			{
+				implementation_t( pointer_type &&ptr ) :
+					stream_( std::move( ptr ) ),
+					cb_(),
+					packet_(),
+					frame_( frame::alloc() ){}
+				
+				pointer_type stream_;
+				callback_t cb_;
+				packet packet_;
+				frame::pointer_type frame_;
+			};
+			std::shared_ptr< implementation_t > impl_;
 	};
 
-	bool decode( stream &stream, AVPacket &p, AVFrame &frame )
+	bool encode( stream &stream, AVPacket &p, AVFrame &frame )
 	{
 		int frame_complete = false;
 		switch( stream->codec->codec_type )
 		{
 			case AVMEDIA_TYPE_VIDEO:
 			{
-				auto result = avcodec_decode_video2( stream->codec, &frame, &frame_complete, &p );
-				result < error( "could not decode video" );
-				if ( frame_complete )
-				{
-					stream.call( frame );
-				}
-				return result;
+				stream.call( frame );
+				auto result = avcodec_encode_video2( stream->codec, &p, &frame, &frame_complete );
+				result < error( "could not encode video" );
+				return frame_complete;
 			}
 			case AVMEDIA_TYPE_AUDIO:
 			case AVMEDIA_TYPE_SUBTITLE:
@@ -314,20 +416,45 @@ namespace av
 		return false;
 	}
 
+	bool decode( stream &stream, AVPacket &p, AVFrame &frame )
+	{
+		int frame_complete = false;
+		
+		switch( stream->codec->codec_type )
+		{
+			case AVMEDIA_TYPE_VIDEO:
+			{
+				auto result = avcodec_decode_video2( stream->codec, &frame, &frame_complete, &p );
+				p.size = 0;
+				if ( result < 0 )
+				{
+					throw std::runtime_error( "could not decode video" );
+				}
+				if ( frame_complete )
+				{
+					stream.call( frame );
+				}
+				return result;
+			}
+			case AVMEDIA_TYPE_AUDIO:
+			case AVMEDIA_TYPE_SUBTITLE:
+			case AVMEDIA_TYPE_UNKNOWN:
+			case AVMEDIA_TYPE_DATA:
+			case AVMEDIA_TYPE_ATTACHMENT:
+			case AVMEDIA_TYPE_NB:
+				p.size = 0;
+				break;
+		}
+		return false;
+	}
+	
+	void interleaved_write_frame( format::context &fmt, packet &p )
+	{
+		av_interleaved_write_frame( fmt.get(), &p ) < error( "could not write frame" );
+	}
+
 	namespace format
 	{
-		typedef decltype( make_unique( avformat_alloc_context(), &avformat_free_context ) ) pointer_type;
-
-		pointer_type alloc_context( const io::context::pointer_type &ptr )
-		{
-			auto result = make_unique( avformat_alloc_context(), &avformat_free_context );
-			if ( ptr )
-			{
-				result->pb = ptr->context_.get();
-			}
-			return result;
-		}
-
 		template < AVMediaType compare, typename Iter, typename Output >
 		void copy_if( Iter start, Iter end, Output out )
 		{
@@ -343,16 +470,43 @@ namespace av
 
 		struct file
 		{
-			file( pointer_type &&f ) :
+			file() :
+				format_( nullptr ) {}
+			
+			file( context &&f ) :
 				format_( std::move( f ) ) {}
+			
+			bool encode( packet &p, AVFrame &frame )
+			{
+				if ( av::encode( streams_[ p.stream_index ], p, frame ) )
+				{
+					av::interleaved_write_frame( format_, p );
+					return true;
+				}
+				return false;
+			}
+			
+			inline bool encode( packet &p, frame::pointer_type &frame )
+			{
+				return encode( p, *frame );
+			}
 
-			file( file &&f ) = default;
-
-			file( const file& ) = delete;
+			void encode_all( packet &&p, frame::pointer_type &&frame )
+			{
+				for ( auto &s : streams_ )
+				{
+					p.stream_index = s->id;
+					
+					while ( encode( p, *frame ) )
+					{
+						//
+					}
+				}
+			}
 
 			bool decode( packet &p, AVFrame &frame )
 			{
-				if ( av::read_frame( format_, p ) )
+				if ( p.size || av::read_frame( format_, p ) )
 				{
 					av::decode( streams_[ p.stream_index ], p, frame );
 				}
@@ -361,22 +515,17 @@ namespace av
 					AVPacket nill = { 0 };
 
 					bool again = false;
-					do
+					for ( auto &s : streams_ )
 					{
-						again = false;
-
-						for ( auto &s : streams_ )
+						if ( s )
 						{
-							if ( s )
-							{
-								again |= av::decode( s, nill, frame );
-							}
+							again |= av::decode( s, nill, frame );
 						}
 					}
-					while ( again );
-
-					return false;
+					
+					return again;
 				}
+				
 				return true;
 			}
 
@@ -398,9 +547,21 @@ namespace av
 				decode_all( av::packet(), av::frame::alloc() );
 			}
 
-			void add_stream( AVStream &s )
+			void add_stream( AVStream *s )
 			{
-				streams_.push_back( stream( s ) );
+				streams_.push_back( stream( make_unique( s, &stream::null_deleter ) ) );
+			}
+			
+			stream& add_stream( const AVCodec *codec )
+			{
+				auto str = av::stream::alloc( format_, codec );
+				streams_.push_back( std::move( str ) );
+				return streams_.back();
+			}
+			
+			stream& add_stream( AVCodecID codec )
+			{
+				return add_stream( avcodec_find_encoder( codec ) );
 			}
 
 			std::vector< stream > streams( AVMediaType filter = AVMEDIA_TYPE_NB ) const
@@ -435,46 +596,66 @@ namespace av
 				}
 				return result;
 			}
+			
+			void find_stream_info( AVDictionary **options = nullptr  )
+			{
+				avformat_find_stream_info( format_.get(), options ) < error( "could not find stream info" );
+				
+				for ( auto i = 0u; i < format_->nb_streams; ++i )
+				{
+					if ( auto s = format_->streams[ i ] )
+					{
+						s->discard = AVDISCARD_ALL;
+						add_stream( s );
+					}
+				}
+			}
+		
+			AVFormatContext* ctx() const
+			{
+				return format_.get();
+			}
 
 			private:
 
-				pointer_type format_;
+				context format_;
 				std::vector< stream > streams_;
 		};
 
-		file open_input( const char *filename, pointer_type &&p, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
+		file open_input( const char *filename, context &&p, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
 		{
 			// release, instead of get since avformat_open_input will free ptr on error
 			auto ptr = p.release();
 			avformat_open_input( &ptr, filename, fmt, options ) < error( std::string( "open input: " ) + filename );
 			p.reset( ptr );
-
+			
 			file result( std::move( p ) );
-			for ( auto i = 0u; i < ptr->nb_streams; ++i )
-			{
-				if ( auto s = ptr->streams[ i ] )
-				{
-					s->discard = AVDISCARD_ALL;
-					result.add_stream( *s );
-				}
-			}
+			
+			result.find_stream_info( options );
 
 			return result;
 		}
 
 		inline file open_input( const char *filename, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
 		{
-			return open_input( filename, alloc_context(), fmt, options );
+			return open_input( filename, context(), fmt, options );
 		}
 
 		inline file open_input( const char *filename, const io::context::pointer_type &ctx, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
 		{
-			return open_input( filename, alloc_context( ctx ), fmt, options );
+			return open_input( filename, context( ctx ), fmt, options );
 		}
 
 		inline file open_input( const io::context::pointer_type &ctx, AVInputFormat *fmt = nullptr, AVDictionary **options = nullptr )
 		{
-			return open_input( "", alloc_context( ctx ), fmt, options );
+			return open_input( "", context( ctx ), fmt, options );
+		}
+		
+		file open_output( const char *filename, context &&ptr )
+		{
+			auto ctx = ptr.get();
+			avformat_alloc_output_context2( &ctx, nullptr, nullptr, filename ) < error("could not open output format" );
+			return context( ptr.release() );
 		}
 	}
 }

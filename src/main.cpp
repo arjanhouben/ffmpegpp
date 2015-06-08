@@ -38,9 +38,7 @@ void test_manual_file_read( const string &input, const string &output )
 		return count;
 	};
 
-	auto fc = av::format::alloc_context( ioctx );
-	
-	auto f = av::format::open_input( "", std::move( fc ), inf );
+	auto f = av::format::open_input( "", av::format::context( ioctx ), inf );
 	
 	vector< char > buffer;
 	
@@ -86,6 +84,54 @@ void test_file_read( const string &input, const string &output )
 	f.decode_all();
 }
 
+
+void sin_to_mp3( const string &input, const string &output )
+{
+	auto ctx = av::format::context();
+	cout << ctx.get() << endl;
+	auto f = av::format::open_output( output.c_str(), std::move( ctx ) );
+	auto stream = f.add_stream( AV_CODEC_ID_MP2 );
+	cout << stream->codec << endl;
+	
+	stream->codec->bit_rate		 = 64000;
+	stream->codec->sample_fmt	 = AV_SAMPLE_FMT_S16;
+	stream->codec->sample_rate    = 44100;
+	stream->codec->channel_layout = AV_CH_LAYOUT_STEREO;
+	stream->codec->channels       = av_get_channel_layout_nb_channels( AV_CH_LAYOUT_STEREO );
+	
+	vector< int16_t > samples;
+	
+	float t = 0;
+
+	auto henk = [&]( AVFrame &frame )
+	{
+		auto c = stream->codec;
+		
+		samples.resize( c->frame_size );
+		for ( auto &s : samples )
+		{
+			s = sin( t ) * 0x7fff;
+			t += 44 / 7 * 440 / c->sample_rate;
+		}
+		
+		frame.nb_samples = c->frame_size;
+		frame.format = c->sample_fmt;
+		frame.channel_layout = c->channel_layout;
+		
+		auto buffersize = av_samples_get_buffer_size( nullptr, c->channels, c->frame_size, c->sample_fmt, 0 );
+		buffersize < av::error( "could not get buffers size" );
+		
+		auto ret = avcodec_fill_audio_frame( &frame, c->channels, c->sample_fmt, (const uint8_t*)samples.data(), samples.size(), 0 );
+  
+	};
+	
+	stream.open( henk );
+	
+	av::packet p;
+	auto frame = av::frame::alloc();
+	f.encode( p, frame );
+}
+
 int main( int argc, char **argv )
 {
 	try
@@ -94,6 +140,7 @@ int main( int argc, char **argv )
 	
 		test_manual_file_read( "test.jpg", "out.ppm" );
 		test_file_read( "test.jpg", "out2.ppm" );
+//		sin_to_mp3( "test.wav", "out.mp3" );
 	}
 	catch( const exception &err )
 	{
