@@ -4,21 +4,33 @@ cmake_minimum_required( VERSION 2.8 )
 
 add_subdirectory( externals )
 
-set( CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS}\ -Wall\ -std=c++11 )
+if( CMAKE_CXX_COMPILER MATCHES "clang|g\\+\\+" )
+    set( CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS}\ -Wall\ -std=c++11 )
+endif()
 
 include_directories(
-	${ffmpeg++_SOURCE_DIR}/include
-	${ffmpeg++_SOURCE_DIR}/externals/install/include
+    ${ffmpeg++_SOURCE_DIR}/externals/install/include
+    ${ffmpeg++_SOURCE_DIR}/include
+    ${FFMPEG_INCLUDE_DIR}
 )
+
+if( MSVC )
+    include_directories( ${ffmpeg++_SOURCE_DIR}/externals/inttypes/ )
+endif()
 
 link_directories(
 	${ffmpeg++_SOURCE_DIR}/externals/install/lib
+    ${FFMPEG_LINK_DIR}
 )
 
 add_executable( testapp
 	src/main.cpp
 	include/ffmpeg++.h
 )
+
+if(  TARGET ffmpeg )
+    add_dependencies( testapp ffmpeg )
+endif()
 
 set( EXTRA_LIBS )
 

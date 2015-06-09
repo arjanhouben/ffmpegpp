@@ -71,6 +71,13 @@ namespace av
 			data_( nullptr, &av_free ),
 			size_( 0 ) { }
 
+        buffer& operator = ( buffer &&rhs )
+        {
+            data_ = std::move( rhs.data_ );
+            size_ = rhs.size_;
+            return *this;
+        }
+
 		unsigned char* data()
 		{
 			return reinterpret_cast< unsigned char* >( data_.get() );
@@ -87,6 +94,8 @@ namespace av
 		}
 
 		private:
+
+            buffer& operator = ( const buffer& );
 
 			pointer_type data_;
 			size_t size_;
@@ -113,8 +122,10 @@ namespace av
 	{
 		struct context : std::unique_ptr< AVFormatContext, decltype( &avformat_free_context ) >
 		{
+            typedef std::unique_ptr< AVFormatContext, decltype( &avformat_free_context ) > base;
+
 			explicit context( AVFormatContext *ctx, const io::context::pointer_type &ptr = io::context::pointer_type() ) :
-				std::unique_ptr< AVFormatContext, decltype( &avformat_free_context ) >( ctx, &avformat_free_context )
+                base( ctx, &avformat_free_context )
 			{
 				if ( ptr )
 				{
@@ -122,23 +133,36 @@ namespace av
 				}
 			}
 			
-			explicit context( const io::context::pointer_type &ptr = io::context::pointer_type() ) :
-				context( avformat_alloc_context(), ptr ) {}
+            explicit context( const io::context::pointer_type &ptr = io::context::pointer_type() ) :
+                base( avformat_alloc_context(), &avformat_free_context )
+            {
+                if ( ptr )
+                {
+                    setup_custom_io( get(), ptr );
+                }
+            }
+
+            context( context &&rhs ) :
+                base( std::move( rhs ) ) {}
+
+            private:
+
+                context( const context& );
 		};
 	}
 
 	struct packet : AVPacket
 	{
+        inline static const AVPacket empty()
+        {
+            AVPacket p = { 0 };
+            return p;
+        }
+
 		packet() :
-			AVPacket( { 0 } )
+            AVPacket( empty() )
 		{
 			av_init_packet( this );
-		}
-		packet( const packet& ) = delete;
-		packet( packet &&rhs ) :
-			AVPacket( rhs )
-		{
-			av_init_packet( &rhs );
 		}
 
 		~packet()
@@ -195,7 +219,7 @@ namespace av
 		{
 			int frameFinished = false;
 			avcodec_decode_video2( codec, p.get(), &frameFinished, &packet ) < error( "could not decode video" );
-			return frameFinished;
+            return frameFinished != 0;
 		}
 		
 		AVCodec* open( AVCodecContext &ctx )
@@ -337,9 +361,9 @@ namespace av
 		}
 		
 		stream( pointer_type &&ptr ) :
-			impl_( std::make_shared< implementation_t >( implementation_t{ std::move( ptr ) } ) ) {}
+            impl_( std::make_shared< implementation_t >( std::move( ptr ) ) ) {}
 		
-		explicit operator bool() const
+        operator bool() const
 		{
 			return bool( impl_->cb_ );
 		}
@@ -403,7 +427,7 @@ namespace av
 				stream.call( frame );
 				auto result = avcodec_encode_video2( stream->codec, &p, &frame, &frame_complete );
 				result < error( "could not encode video" );
-				return frame_complete;
+                return frame_complete != 0;
 			}
 			case AVMEDIA_TYPE_AUDIO:
 			case AVMEDIA_TYPE_SUBTITLE:
@@ -434,7 +458,7 @@ namespace av
 				{
 					stream.call( frame );
 				}
-				return result;
+                return result != 0;
 			}
 			case AVMEDIA_TYPE_AUDIO:
 			case AVMEDIA_TYPE_SUBTITLE:
@@ -475,6 +499,9 @@ namespace av
 			
 			file( context &&f ) :
 				format_( std::move( f ) ) {}
+
+            file( file &&rhs ) :
+                format_( std::move( rhs.format_ ) ) {}
 			
 			bool encode( packet &p, AVFrame &frame )
 			{
@@ -618,6 +645,8 @@ namespace av
 
 			private:
 
+                file( const file& );
+
 				context format_;
 				std::vector< stream > streams_;
 		};
@@ -665,9 +694,52 @@ namespace sws
 	class context
 	{
 		std::vector< SwsContext* > contexts_;
-	};
+    };
 
-	void convert( AVFrame &frame, uint8_t **dst, const int *strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
+    template < typename T >
+    struct array_helper : std::array< T, AV_NUM_DATA_POINTERS >
+    {
+        typedef std::array< T, AV_NUM_DATA_POINTERS > base;
+
+        array_helper( T v = T ) :
+            base()
+        {
+            base::fill( 0 );
+            base::operator []( 0 ) = v;
+        }
+
+        array_helper( T a, T b ) :
+            base()
+        {
+            base::fill( 0 );
+            base::operator []( 0 ) = a;
+            base::operator []( 1 ) = b;
+        }
+
+        array_helper( T a, T b, T c ) :
+            base()
+        {
+            base::fill( 0 );
+            base::operator []( 0 ) = a;
+            base::operator []( 1 ) = b;
+            base::operator []( 2 ) = c;
+        }
+
+        array_helper( T a, T b, T c, T d ) :
+            base()
+        {
+            base::fill( 0 );
+            base::operator []( 0 ) = a;
+            base::operator []( 1 ) = b;
+            base::operator []( 2 ) = c;
+            base::operator []( 3 ) = d;
+        }
+    };
+
+    typedef array_helper< int > strides_t;
+    typedef array_helper< uint8_t* > pointers_t;
+
+    void convert( AVFrame &frame, const pointers_t &dst, const strides_t &strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
 	{
 		if ( !width )
 		{
@@ -681,9 +753,16 @@ namespace sws
 		auto ctx = sws_getCachedContext( nullptr, frame.width, frame.height, static_cast< AVPixelFormat >( frame.format ), width, height, desired, flags, nullptr, nullptr, nullptr );
 
 		auto &picture = reinterpret_cast< AVPicture& >( frame );
-		sws_scale( ctx, picture.data, picture.linesize, 0, frame.height, dst, strides );
+        sws_scale( ctx, picture.data, picture.linesize, 0, frame.height, dst.data(), strides.data() );
 	}
 
+#ifndef _MSC_VER
+#define USE_INITIALIZER_LIST
+#elif _MSC_VER > 1700
+#define USE_INITIALIZER_LIST
+#endif
+
+#ifdef USE_INITIALIZER_LIST
 	void convert( AVFrame &frame, std::initializer_list< uint8_t* > dst, std::initializer_list< int > strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
 	{
 		std::vector< uint8_t* > dstptr( dst.begin(), dst.end() );
@@ -694,9 +773,10 @@ namespace sws
 
 		convert( frame, dstptr.data(), stridesptr.data(), desired, width, height, flags );
 	}
+#endif
 
 	void convert( AVFrame &frame, void *dst, int stride, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
 	{
-		convert( frame, { reinterpret_cast< uint8_t* >( dst ) }, { stride }, desired, width, height, flags );
+        convert( frame, pointers_t( reinterpret_cast< uint8_t* >( dst ) ), strides_t( stride ), desired, width, height, flags );
 	}
 }

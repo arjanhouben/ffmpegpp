@@ -71,7 +71,7 @@ void test_file_read( const string &input, const string &output )
 		auto b = a + frame.width * frame.height;
 		auto c = b + frame.width * frame.height;
 		
-		sws::convert( frame, { a,b,c }, { frame.width, frame.width, frame.width }, AV_PIX_FMT_YUV444P );
+        sws::convert( frame, sws::pointers_t( a,b,c ), sws::strides_t( frame.width, frame.width, frame.width ), AV_PIX_FMT_YUV444P );
 		
 		write_ppm( output, frame.width, frame.height, henk.data() );
 	};
