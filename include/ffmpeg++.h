@@ -707,7 +707,7 @@ namespace sws
             base()
         {
             base::operator []( 0 ) = v;
-            std::fill( begin() + 1, end(), T() );
+            std::fill( base::begin() + 1, base::end(), T() );
         }
 
         array_helper( T a, T b ) :
@@ -715,7 +715,7 @@ namespace sws
         {
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
-            std::fill( begin() + 2, end(), T() );
+            std::fill( base::begin() + 2, base::end(), T() );
         }
 
         array_helper( T a, T b, T c ) :
@@ -724,7 +724,7 @@ namespace sws
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
-            std::fill( begin() + 3, end(), T() );
+            std::fill( base::begin() + 3, base::end(), T() );
         }
 
         array_helper( T a, T b, T c, T d ) :
@@ -734,7 +734,7 @@ namespace sws
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
             base::operator []( 3 ) = d;
-            std::fill( begin() + 4, end(), T() );
+            std::fill( base::begin() + 4, base::end(), T() );
         }
     };
 
