@@ -701,38 +701,42 @@ namespace sws
     {
         typedef std::array< T, AV_NUM_DATA_POINTERS > base;
 
-        array_helper( T v = T ) :
+        array_helper( T v = T() ) :
             base()
         {
-            base::fill( 0 );
             base::operator []( 0 ) = v;
+			using namespace std;
+			fill( begin( *this ) + 1, end( *this ), T() );
         }
 
         array_helper( T a, T b ) :
             base()
         {
-            base::fill( 0 );
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
+			using namespace std;
+			fill( begin( *this ) + 2, end( *this ), T() );
         }
 
         array_helper( T a, T b, T c ) :
             base()
         {
-            base::fill( 0 );
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
+			using namespace std;
+			fill( begin( *this ) + 3, end( *this ), T() );
         }
 
         array_helper( T a, T b, T c, T d ) :
             base()
         {
-            base::fill( 0 );
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
             base::operator []( 3 ) = d;
+			using namespace std;
+			fill( begin( *this ) + 4, end( *this ), T() );
         }
     };
 
@@ -755,25 +759,6 @@ namespace sws
 		auto &picture = reinterpret_cast< AVPicture& >( frame );
         sws_scale( ctx, picture.data, picture.linesize, 0, frame.height, dst.data(), strides.data() );
 	}
-
-#ifndef _MSC_VER
-#define USE_INITIALIZER_LIST
-#elif _MSC_VER > 1700
-#define USE_INITIALIZER_LIST
-#endif
-
-#ifdef USE_INITIALIZER_LIST
-	void convert( AVFrame &frame, std::initializer_list< uint8_t* > dst, std::initializer_list< int > strides, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
-	{
-		std::vector< uint8_t* > dstptr( dst.begin(), dst.end() );
-		dstptr.resize( AV_NUM_DATA_POINTERS, 0 );
-
-		std::vector< int > stridesptr( strides.begin(), strides.end() );
-		stridesptr.resize( AV_NUM_DATA_POINTERS, 0 );
-
-		convert( frame, dstptr.data(), stridesptr.data(), desired, width, height, flags );
-	}
-#endif
 
 	void convert( AVFrame &frame, void *dst, int stride, AVPixelFormat desired, size_t width = 0, size_t height = 0, int flags = 0 )
 	{
