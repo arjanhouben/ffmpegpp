@@ -5,6 +5,8 @@
 #include <memory>
 #include <vector>
 #include <array>
+#include <iterator>
+#include <algorithm>
 
 extern "C"
 {
@@ -705,8 +707,7 @@ namespace sws
             base()
         {
             base::operator []( 0 ) = v;
-			using namespace std;
-			fill( begin( *this ) + 1, end( *this ), T() );
+            std::fill( begin() + 1, end(), T() );
         }
 
         array_helper( T a, T b ) :
@@ -714,8 +715,7 @@ namespace sws
         {
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
-			using namespace std;
-			fill( begin( *this ) + 2, end( *this ), T() );
+            std::fill( begin() + 2, end(), T() );
         }
 
         array_helper( T a, T b, T c ) :
@@ -724,8 +724,7 @@ namespace sws
             base::operator []( 0 ) = a;
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
-			using namespace std;
-			fill( begin( *this ) + 3, end( *this ), T() );
+            std::fill( begin() + 3, end(), T() );
         }
 
         array_helper( T a, T b, T c, T d ) :
@@ -735,8 +734,7 @@ namespace sws
             base::operator []( 1 ) = b;
             base::operator []( 2 ) = c;
             base::operator []( 3 ) = d;
-			using namespace std;
-			fill( begin( *this ) + 4, end( *this ), T() );
+            std::fill( begin() + 4, end(), T() );
         }
     };
 
