@@ -497,13 +497,16 @@ namespace av
 		struct file
 		{
 			file() :
-				format_( nullptr ) {}
+				format_( nullptr ),
+				streams_() {}
 			
 			file( context &&f ) :
-				format_( std::move( f ) ) {}
+				format_( std::move( f ) ),
+				streams_() {}
 
             file( file &&rhs ) :
-                format_( std::move( rhs.format_ ) ) {}
+                format_( std::move( rhs.format_ ) ),
+				streams_( std::move( rhs.streams_ ) ) {}
 			
 			bool encode( packet &p, AVFrame &frame )
 			{
