@@ -144,8 +144,9 @@ namespace av
                 }
             }
 
-            context( context &&rhs ) :
-                base( std::move( rhs ) ) {}
+            context( context &&rhs ) = default;
+			
+			context& operator = ( context && ) = default;
 
             private:
 
@@ -365,6 +366,12 @@ namespace av
 		stream( pointer_type &&ptr ) :
             impl_( std::make_shared< implementation_t >( std::move( ptr ) ) ) {}
 		
+		stream( stream && ) = default;
+		stream( const stream & ) = default;
+		
+		stream& operator = ( stream && ) = default;
+		stream& operator = ( const stream & ) = default;
+		
         operator bool() const
 		{
 			return bool( impl_->cb_ );
@@ -454,15 +461,33 @@ namespace av
 				p.size = 0;
 				if ( result < 0 )
 				{
-					throw std::runtime_error( "could not decode video" );
+					// error, do something usefull
 				}
 				if ( frame_complete )
 				{
 					stream.call( frame );
 				}
-                return result != 0;
+                return result > 0;
 			}
 			case AVMEDIA_TYPE_AUDIO:
+			{
+				auto result = avcodec_decode_audio4( stream->codec, &frame, &frame_complete, &p );
+				if ( result < 0 )
+				{
+					// error, do something usefull
+					p.size = 0;
+				}
+				else
+				{
+					p.size -= result;
+					p.data += result;
+				}
+				if ( frame_complete )
+				{
+					stream.call( frame );
+				}
+                return result > 0;
+			}
 			case AVMEDIA_TYPE_SUBTITLE:
 			case AVMEDIA_TYPE_UNKNOWN:
 			case AVMEDIA_TYPE_DATA:
@@ -507,6 +532,15 @@ namespace av
             file( file &&rhs ) :
                 format_( std::move( rhs.format_ ) ),
 				streams_( std::move( rhs.streams_ ) ) {}
+			
+			file& operator = ( file &&rhs )
+			{
+				using std::swap;
+				format_ = std::move( rhs.format_ );
+				streams_ = std::move( rhs.streams_ );
+				return *this;
+			}
+			
 			
 			bool encode( packet &p, AVFrame &frame )
 			{
