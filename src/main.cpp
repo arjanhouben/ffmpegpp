@@ -26,19 +26,25 @@ void test_manual_file_read( const string &input, const string &output )
 	auto inf = av_find_input_format( "mjpeg" ) || av::error( "could not find mjpeg format" );
 
 	auto ioctx = av::io::context::alloc();
+	
+	uint8_t tmp[ 64 ];
+	ioctx->buffer = tmp;
+	ioctx->buf_end = tmp + sizeof( tmp );
+	ioctx->buf_ptr = tmp;
+	ioctx->buffer_size = sizeof( tmp );
 
 	auto bufstart = reinterpret_cast< uint8_t* >( data.data() );
 	auto bufend = bufstart + data.size();
 	
-	ioctx->read = [bufstart,bufend]( uint8_t *buffer, int size ) mutable
+	ioctx.read = [bufstart,bufend]( uint8_t *buffer, int size ) mutable
 	{
-		auto count = min< size_t >( bufend - bufstart, size );
+		auto count = min< int >( bufend - bufstart, size );
 		copy( bufstart, bufstart + count, buffer );
 		bufstart += count;
 		return count;
 	};
 
-	auto f = av::format::open_input( "", av::format::context( ioctx ), inf );
+	auto f = av::format::open_input( "", av::format::make_context( ioctx ), inf );
 	
 	vector< char > buffer;
 	
@@ -49,11 +55,13 @@ void test_manual_file_read( const string &input, const string &output )
 		sws::convert( frame, buffer.data(), frame.width, AV_PIX_FMT_RGB24 );
 		
 		write_ppm( output, frame.width, frame.height, buffer.data() );
+		
+		return true;
 	};
 	
 	for ( auto &s : f.streams() )
 	{
-		s.open( henk );
+		s.open_input( henk );
 	}
 	
 	f.decode_all();
@@ -74,11 +82,13 @@ void test_file_read( const string &input, const string &output )
         sws::convert( frame, sws::pointers_t( a,b,c ), sws::strides_t( frame.width, frame.width, frame.width ), AV_PIX_FMT_YUV444P );
 		
 		write_ppm( output, frame.width, frame.height, henk.data() );
+		
+		return true;
 	};
 
 	for( auto &s : f.streams() )
 	{
-		s.open( callback );
+		s.open_input( callback );
 	}
 	
 	f.decode_all();
@@ -87,9 +97,7 @@ void test_file_read( const string &input, const string &output )
 
 void sin_to_mp3( const string &input, const string &output )
 {
-	auto ctx = av::format::context();
-	cout << ctx.get() << endl;
-	auto f = av::format::open_output( output.c_str(), std::move( ctx ) );
+	auto f = av::format::open_output( output.c_str() );
 	auto stream = f.add_stream( AV_CODEC_ID_MP2 );
 	cout << stream->codec << endl;
 	
@@ -123,13 +131,77 @@ void sin_to_mp3( const string &input, const string &output )
 		
 		auto ret = avcodec_fill_audio_frame( &frame, c->channels, c->sample_fmt, (const uint8_t*)samples.data(), samples.size(), 0 );
   
+		return true;
 	};
 	
-	stream.open( henk );
+	stream.open_output( henk );
 	
 	av::packet p;
 	auto frame = av::frame::alloc();
 	f.encode( p, frame );
+}
+
+
+void test_file_write( const string &output )
+{
+	auto file = av::format::open_output( output.c_str() );
+	
+	auto video = file.add_stream( AV_CODEC_ID_MJPEG );
+	
+	const auto width = 320, height = 240, bpp = 2;
+	
+	vector< uint8_t > data( width * height * bpp );
+	std::fill( data.begin(), data.end(), 0xAA );
+	
+	vector< uint8_t > convertbuffer( width * height * bpp );
+	
+	
+	video->codec->pix_fmt = AV_PIX_FMT_YUVJ422P;
+	video->codec->width = width;
+	video->codec->height = height;
+	video->codec->gop_size = 12;
+	video->codec->qmax = 5;
+	video->codec->qmin = 2;
+	video->codec->time_base.num = 1;
+	video->codec->time_base.den = 25;
+	video->codec->bit_rate = 4000000;
+	
+	auto henk = [&]( AVFrame &dstframe )
+	{
+		sws::helper src, dst;
+		src.data[ 0 ] = data.data();
+		src.stride[ 0 ] = width * bpp;
+		src.format = video->codec->pix_fmt;
+		src.width = width;
+		src.height = height;
+
+		dst.stride[ 0 ] = width;
+		dst.stride[ 1 ] = width / 2;
+		dst.stride[ 2 ] = width / 2;
+		dst.data[ 0 ] = &convertbuffer[ 0 ];
+		dst.data[ 1 ] = &convertbuffer[ 0 ] + dst.stride[ 0 ];
+		dst.data[ 2 ] = &convertbuffer[ 1 ] + dst.stride[ 1 ];
+		dst.format = AV_PIX_FMT_YUV422P;
+		dst.width = width;
+		dst.height = height;
+		
+		sws::convert( src, dst );
+		
+		dst.to_avframe( dstframe );
+		
+		return true;
+
+//		sws::pointers_t pointers( dstframe.data, dstframe.data + AV_NUM_DATA_POINTERS );
+//		sws::strides_t strides( dstframe.linesize, dstframe.linesize + AV_NUM_DATA_POINTERS );
+//		
+//		sws::convert( tmpframe, pointers, strides, AV_PIX_FMT_YUV422P );
+	};
+	
+	video.open_output( henk );
+	
+	av::packet p;
+	auto frame = av::frame::alloc();
+	file.encode( p, frame );
 }
 
 int main( int argc, char **argv )
@@ -138,9 +210,10 @@ int main( int argc, char **argv )
 	{
 		av_register_all();
 	
-		test_manual_file_read( "test.jpg", "out.ppm" );
-		test_file_read( "test.jpg", "out2.ppm" );
+//		test_manual_file_read( "test.jpg", "out.ppm" );
+//		test_file_read( "test.jpg", "out2.ppm" );
 //		sin_to_mp3( "test.wav", "out.mp3" );
+		test_file_write( "out.mjpeg" );
 	}
 	catch( const exception &err )
 	{
